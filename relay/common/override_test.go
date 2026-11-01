@@ -142,7 +142,50 @@ func TestApplyParamOverrideLaterOperationsSeeEarlierEdits(t *testing.T) {
 
 	out, err := ApplyParamOverride(input, override, nil)
 	require.NoError(t, err)
-	assert.Equal(t, `{"messages":[{"text":"a","type":"text"}],"model":"gpt-5","tags":["x","Y"],"effort":"high"}`, string(out))
+	assert.Equal(t, `{"model":"gpt-5","messages":[{"type":"text","text":"a"}],"tags":["x","Y"],"effort":"high"}`, string(out))
+}
+
+// Object merges and prune_objects edit the body in place: members they do not
+// touch keep their order, number spelling and characters.
+func TestApplyParamOverrideMergeAndPruneKeepMemberOrder(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		op    map[string]any
+		want  string
+	}{
+		{
+			name:  "append merges into the object in place",
+			input: `{"zeta":1.0,"config":{"y":1e2,"b":"<b>&","keep":1},"model":"m"}`,
+			op:    map[string]any{"path": "config", "mode": "append", "value": map[string]any{"keep": 2, "c": true, "a": "x"}},
+			want:  `{"zeta":1.0,"config":{"y":1e2,"b":"<b>&","keep":2,"a":"x","c":true},"model":"m"}`,
+		},
+		{
+			name:  "keep_origin leaves existing members",
+			input: `{"config":{"y":1e2,"keep":1}}`,
+			op:    map[string]any{"path": "config", "mode": "append", "keep_origin": true, "value": map[string]any{"keep": 2, "a": "x"}},
+			want:  `{"config":{"y":1e2,"keep":1,"a":"x"}}`,
+		},
+		{
+			name:  "prune over the whole body",
+			input: `{"zeta":1.0,"messages":[{"type":"text","n":1e2},{"type":"thinking"},{"role":"u","content":[{"type":"thinking"},{"type":"text","b":"<b>&"}]}],"model":"m"}`,
+			op:    map[string]any{"mode": "prune_objects", "value": "thinking"},
+			want:  `{"zeta":1.0,"messages":[{"type":"text","n":1e2},{"role":"u","content":[{"type":"text","b":"<b>&"}]}],"model":"m"}`,
+		},
+		{
+			name:  "prune drops object members",
+			input: `{"a":{"x":{"type":"thinking"},"y":1.0},"b":2}`,
+			op:    map[string]any{"path": "a", "mode": "prune_objects", "value": "thinking"},
+			want:  `{"a":{"y":1.0},"b":2}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := ApplyParamOverride([]byte(tt.input), map[string]any{"operations": []any{tt.op}}, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, string(out))
+		})
+	}
 }
 
 func TestApplyParamOverrideTrimRequiresValue(t *testing.T) {

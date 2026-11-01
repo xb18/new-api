@@ -92,7 +92,7 @@ func (a *Adaptor) newMantleRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 			return nil, fmt.Errorf("marshal AWS Mantle request: %w", err)
 		}
 	}
-	if err := relaycommon.SetJSONMember(doc, "model", model); err != nil {
+	if err := relaycommon.SetJSONMember(doc, "", "model", model); err != nil {
 		return nil, fmt.Errorf("marshal AWS Mantle request: %w", err)
 	}
 	body := doc.Bytes()

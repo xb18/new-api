@@ -122,7 +122,7 @@ func buildAlphaSearchRequestBody(rawBody []byte, originModel, upstreamModel stri
 		return nil, errors.New("alpha search request body must be a JSON object")
 	}
 	body := ojson.NewDoc(rawBody)
-	if err := relaycommon.SetJSONMember(body, "model", upstreamModel); err != nil {
+	if err := relaycommon.SetJSONMember(body, "", "model", upstreamModel); err != nil {
 		return nil, err
 	}
 	return body.Bytes(), nil

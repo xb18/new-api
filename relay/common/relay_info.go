@@ -1155,14 +1155,20 @@ func DeleteJSONMember(doc *ojson.Doc, path string) error {
 	return nil
 }
 
-// SetJSONMember sets the top-level member key to value and leaves one copy.
-// A key that appears once is replaced where it stands, so the body keeps its
-// member order; a repeated key is removed everywhere, for the reason given on
-// DeleteJSONMember, and written once at the end.
-func SetJSONMember(doc *ojson.Doc, key string, value any) error {
+// SetJSONMember sets member key of the object at parent ("" for the root) to
+// value and leaves one copy. A key that appears once is replaced where it
+// stands, so the object keeps its member order; a repeated key is removed
+// everywhere, for the reason given on DeleteJSONMember, and written once at
+// the end.
+func SetJSONMember(doc *ojson.Doc, parent, key string, value any) error {
 	path := ojson.Escape(key)
+	object := doc.Get("@this")
+	if parent != "" {
+		path = parent + "." + path
+		object = doc.Get(parent)
+	}
 	copies := 0
-	doc.Get("@this").ForEach(func(member, _ ojson.Result) bool {
+	object.ForEach(func(member, _ ojson.Result) bool {
 		if member.Str == key {
 			copies++
 		}

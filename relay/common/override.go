@@ -1026,7 +1026,7 @@ func applyOperations(doc *ojson.Doc, operations []ParamOperation, conditionConte
 			return nil, returnErr
 		case "prune_objects":
 			for _, path := range opPaths {
-				doc, err = pruneObjects(doc, path, contextJSON, op.Value)
+				err = pruneObjects(doc, path, contextJSON, op.Value)
 				if err != nil {
 					break
 				}
@@ -1925,56 +1925,38 @@ type pruneObjectsOptions struct {
 	recursive  bool
 }
 
-// pruneObjects 返回修改后的 Doc：path 为空时整个请求体被重新编码，
-// 返回一个新的 Doc，否则在原 Doc 上修改。
-func pruneObjects(doc *ojson.Doc, path, contextJSON string, value any) (*ojson.Doc, error) {
+// pruneObjects 在原 Doc 上删除 path（为空时为整个请求体）下满足条件的对象，
+// 其余内容保持原样。
+func pruneObjects(doc *ojson.Doc, path, contextJSON string, value any) error {
 	options, err := parsePruneObjectsOptions(value)
 	if err != nil {
-		return nil, err
-	}
-
-	if path == "" {
-		var root any
-		if err := common.Unmarshal(doc.Bytes(), &root); err != nil {
-			return nil, err
-		}
-		cleaned, _, err := pruneObjectsNode(root, options, contextJSON, true)
-		if err != nil {
-			return nil, err
-		}
-		cleanedBytes, err := common.Marshal(cleaned)
-		if err != nil {
-			return nil, err
-		}
-		return ojson.NewDoc(cleanedBytes), nil
+		return err
 	}
 
 	target := doc.Get(path)
+	if path == "" {
+		target = doc.Get("@this")
+	}
 	if !target.Exists() {
-		return doc, nil
+		return nil
 	}
 
-	var targetNode any
-	if target.Type == ojson.JSON {
-		if err := common.UnmarshalJsonStr(target.Raw, &targetNode); err != nil {
-			return nil, err
+	var pruned []prunedObject
+	if _, err := collectPrunedObjects(target, path, options, contextJSON, true, &pruned); err != nil {
+		return err
+	}
+	// 从后往前删，前面数组元素的下标不受影响
+	for i := len(pruned) - 1; i >= 0; i-- {
+		if pruned[i].member {
+			err = DeleteJSONMember(doc, pruned[i].path)
+		} else {
+			err = doc.Delete(pruned[i].path)
 		}
-	} else {
-		targetNode = target.Value()
+		if err != nil {
+			return err
+		}
 	}
-
-	cleaned, _, err := pruneObjectsNode(targetNode, options, contextJSON, true)
-	if err != nil {
-		return nil, err
-	}
-	cleanedBytes, err := common.Marshal(cleaned)
-	if err != nil {
-		return nil, err
-	}
-	if err := doc.SetRawBytes(path, cleanedBytes); err != nil {
-		return nil, err
-	}
-	return doc, nil
+	return nil
 }
 
 func parsePruneObjectsOptions(value any) (pruneObjectsOptions, error) {
@@ -2102,66 +2084,67 @@ func parseConditionOperations(raw any) ([]ConditionOperation, error) {
 	}
 }
 
-func pruneObjectsNode(node any, options pruneObjectsOptions, contextJSON string, isRoot bool) (any, bool, error) {
-	switch value := node.(type) {
-	case []any:
-		result := make([]any, 0, len(value))
-		for _, item := range value {
-			next, drop, err := pruneObjectsNode(item, options, contextJSON, false)
+// prunedObject 是 prune_objects 要删除的对象：对象成员按键删除所有副本，
+// 数组元素按下标删除。
+type prunedObject struct {
+	path   string
+	member bool
+}
+
+// collectPrunedObjects 遍历 node：数组逐个检查元素，对象满足条件时（根节点除外）
+// 整个删除，recursive 时继续检查对象的成员。要删除的路径按文档顺序追加到
+// pruned，返回值表示 node 本身是否要删除。
+func collectPrunedObjects(node ojson.Result, path string, options pruneObjectsOptions, contextJSON string, isRoot bool, pruned *[]prunedObject) (bool, error) {
+	prefix := ""
+	if path != "" {
+		prefix = path + "."
+	}
+	switch {
+	case node.IsArray():
+		for i, item := range node.Array() {
+			itemPath := prefix + strconv.Itoa(i)
+			drop, err := collectPrunedObjects(item, itemPath, options, contextJSON, false, pruned)
 			if err != nil {
-				return nil, false, err
+				return false, err
 			}
 			if drop {
-				continue
+				*pruned = append(*pruned, prunedObject{path: itemPath})
 			}
-			result = append(result, next)
 		}
-		return result, false, nil
-	case map[string]any:
-		shouldDrop, err := shouldPruneObject(value, options, contextJSON)
+		return false, nil
+	case node.IsObject():
+		shouldDrop, err := checkConditions(ojson.NewDocString(node.Raw), contextJSON, options.conditions, options.logic)
 		if err != nil {
-			return nil, false, err
+			return false, err
 		}
 		if shouldDrop && !isRoot {
-			return nil, true, nil
+			return true, nil
 		}
 		if !options.recursive {
-			return value, false, nil
+			return false, nil
 		}
-		for key, child := range value {
-			next, drop, err := pruneObjectsNode(child, options, contextJSON, false)
+		node.ForEach(func(key, child ojson.Result) bool {
+			childPath := prefix + ojson.Escape(key.Str)
+			var drop bool
+			drop, err = collectPrunedObjects(child, childPath, options, contextJSON, false, pruned)
 			if err != nil {
-				return nil, false, err
+				return false
 			}
 			if drop {
-				delete(value, key)
-				continue
+				*pruned = append(*pruned, prunedObject{path: childPath, member: true})
 			}
-			value[key] = next
-		}
-		return value, false, nil
-	default:
-		return node, false, nil
-	}
-}
-
-func shouldPruneObject(node map[string]any, options pruneObjectsOptions, contextJSON string) (bool, error) {
-	nodeBytes, err := common.Marshal(node)
-	if err != nil {
+			return true
+		})
 		return false, err
+	default:
+		return false, nil
 	}
-	return checkConditions(ojson.NewDoc(nodeBytes), contextJSON, options.conditions, options.logic)
 }
 
+// mergeObjects 把 value 的成员写入 path 处的对象：已有成员原地替换，新成员按
+// 键名顺序追加到末尾，其余成员保持原样。
 func mergeObjects(doc *ojson.Doc, path string, value any, keepOrigin bool) error {
-	current := doc.Get(path)
-	var currentMap, newMap map[string]any
-
-	// 解析当前值（current.Raw 直接引用文档，避免再分配一份）
-	if err := common.UnmarshalJsonStr(current.Raw, &currentMap); err != nil {
-		return err
-	}
-	// 解析新值
+	var newMap map[string]any
 	switch v := value.(type) {
 	case map[string]any:
 		newMap = v
@@ -2171,15 +2154,17 @@ func mergeObjects(doc *ojson.Doc, path string, value any, keepOrigin bool) error
 			return err
 		}
 	}
-	// 合并
-	result := make(map[string]any)
-	maps.Copy(result, currentMap)
-	for k, v := range newMap {
-		if !keepOrigin || result[k] == nil {
-			result[k] = v
+	for _, key := range slices.Sorted(maps.Keys(newMap)) {
+		if keepOrigin {
+			if current := doc.Get(path + "." + ojson.Escape(key)); current.Exists() && current.Type != ojson.Null {
+				continue
+			}
+		}
+		if err := SetJSONMember(doc, path, key, newMap[key]); err != nil {
+			return err
 		}
 	}
-	return doc.Set(path, result)
+	return nil
 }
 
 // BuildParamOverrideContext 提供 ApplyParamOverride 可用的上下文信息。
