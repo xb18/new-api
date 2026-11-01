@@ -19,9 +19,9 @@ import (
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"github.com/tidwall/gjson"
 )
 
 type ThinkingContentInfo struct {
@@ -554,8 +554,8 @@ func reasoningEffortFromRequest(request dto.Request) string {
 		}
 		effort = req.ReasoningEffort
 		if strings.TrimSpace(effort) == "" && len(req.Reasoning) > 0 {
-			value := gjson.GetBytes(req.Reasoning, "effort")
-			if value.Type == gjson.String {
+			value := ojson.GetBytes(req.Reasoning, "effort")
+			if value.Type == ojson.String {
 				effort = value.String()
 			}
 		}
@@ -1223,7 +1223,7 @@ func RemoveDisabledFields(jsonData []byte, channelOtherSettings dto.ChannelOther
 }
 
 func hasRemovableDisabledField(jsonData []byte, channelOtherSettings dto.ChannelOtherSettings) bool {
-	values := gjson.GetManyBytes(
+	values := ojson.GetManyBytes(
 		jsonData,
 		"service_tier",
 		"inference_geo",
