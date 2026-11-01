@@ -2365,6 +2365,17 @@ func TestRemoveDisabledFieldsKeepsNestedKeyOrder(t *testing.T) {
 	assert.Equal(t, `{"response_format":{"type":"json_schema","json_schema":{"name":"answer","schema":{"type":"object","properties":{"reasoning":{"type":"string"},"answer":{"type":"string"}}}}},"stream_options":{"include_usage":true}}`, string(out))
 }
 
+// Other members keep their bytes and order. A disabled key sent twice is
+// removed in every copy, since upstreams read the last one.
+func TestRemoveDisabledFieldsKeepsUntouchedBytes(t *testing.T) {
+	input := `{"model":"m","service_tier":"flex","temperature":1.0,"max_tokens":1e3,"stop":["<|end|>"],"service\u005ftier":"priority","stream_options":{"include_obfuscation":false}}`
+
+	out, err := RemoveDisabledFields([]byte(input), dto.ChannelOtherSettings{}, false)
+
+	require.NoError(t, err)
+	assert.Equal(t, `{"model":"m","temperature":1.0,"max_tokens":1e3,"stop":["<|end|>"]}`, string(out))
+}
+
 func TestRemoveDisabledFieldsNoControlledFieldsKeepsBody(t *testing.T) {
 	input := `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`
 	settings := dto.ChannelOtherSettings{}

@@ -59,7 +59,7 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 // bill nothing. A zero result leaves the requested quantity in place because
 // UpdateImageCount ignores non-positive counts.
 func openaiImageResponseCount(responseBody []byte) int64 {
-	data := ojson.GetBytes(responseBody, "data")
+	data := ojson.GetBytesNoCopy(responseBody, "data")
 	if data.IsObject() {
 		if openaiImageDataHasField(data, "url") || openaiImageDataHasField(data, "b64_json") {
 			return 1
@@ -300,43 +300,36 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 	}
 
 	// ojson.Result.Array returns the element list for an array and a single
-	// element for an object-shaped data, keeping document-relative indexes so
-	// the zero-copy field forwarding below stays valid for both shapes.
-	// Entries without url or b64_json carry no image and are not forwarded.
+	// element for an object-shaped data. The results share memory with
+	// responseBody, which stays unchanged here, so the fields are forwarded
+	// without copying. Entries without url or b64_json carry no image and are
+	// not forwarded.
 	emitted := 0
-	for _, image := range ojson.GetBytes(responseBody, "data").Array() {
+	for _, image := range ojson.GetBytesNoCopy(responseBody, "data").Array() {
 		if !openaiImageDataHasField(image, "url") && !openaiImageDataHasField(image, "b64_json") {
 			continue
 		}
-		payload := []byte(`{"type":"image_generation.completed"}`)
-		payload, err = ojson.SetBytes(payload, "created_at", created)
-		if err != nil {
+		payload := ojson.NewDocString(`{"type":"image_generation.completed"}`)
+		if err := payload.Set("created_at", created); err != nil {
 			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
 		if validUsage {
-			payload, err = ojson.SetRawBytes(payload, "usage", usageJSON)
-			if err != nil {
+			if err := payload.SetRawBytes("usage", usageJSON); err != nil {
 				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 			}
 		}
-		// b64_json goes last: every ojson.Set* reallocates the whole payload,
-		// so inserting the large blob after all small fields avoids re-copying
-		// multi-MB buffers.
+		// The event keeps its field order with b64_json last. The Doc writes
+		// the event once, so the large blob is copied only into the output.
 		for _, field := range []string{"url", "revised_prompt", "b64_json"} {
 			value := image.Get(field)
 			if value.Type != ojson.String || value.Raw == `""` {
 				continue
 			}
-			raw := []byte(value.Raw)
-			if value.Index > 0 {
-				raw = responseBody[value.Index : value.Index+len(value.Raw)]
-			}
-			payload, err = ojson.SetRawBytes(payload, field, raw)
-			if err != nil {
+			if err := payload.SetRaw(field, value.Raw); err != nil {
 				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 			}
 		}
-		if writeErr := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: "image_generation.completed"}, string(payload)); writeErr != nil {
+		if writeErr := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: "image_generation.completed"}, payload.String()); writeErr != nil {
 			if info != nil && info.StreamStatus != nil {
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, writeErr)
 			}
